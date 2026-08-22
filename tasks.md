@@ -1,0 +1,29 @@
+# Tasks & Implementation Roadmap
+
+- [x] Step 1: Environment Setup & Project Directory Structure
+    - [x] Create `requirements.txt`
+    - [x] Create `.env.example` and instructions for `.env`
+    - [x] Verify environment installation
+- [x] Step 2: Codebase Ingestion & RAG
+    - [x] Implement `repository_loader.py`
+    - [x] Implement `code_splitter.py`
+    - [x] Implement `vector_store.py`
+- [x] Step 3: Debugging Tools
+    - [x] Implement `search_codebase` tool
+    - [x] Implement `analyze_stack_trace` tool
+    - [x] Implement `inspect_dependencies` tool
+    - [x] Implement `run_syntax_check` and `run_linter` tools
+    - [x] Implement `run_unit_tests` tool
+- [ ] Step 4: LangGraph Workflow & State Machine
+    - [ ] Define state schemas (`state.py`)
+    - [ ] Implement nodes (`nodes.py` & `routing.py`)
+    - [ ] Assemble workflow graph (`workflow.py`)
+- [ ] Step 5: FastAPI Backend Services
+    - [ ] Implement backend routers & main app entry point
+    - [ ] Connect backend to the LangGraph workflow
+- [ ] Step 6: Streamlit UI
+    - [ ] Create main interface with repository uploading and interactive chat
+    - [ ] Add patch preview, diff viewer, and human-in-the-loop validation triggers
+- [ ] Step 7: Testing & Walkthrough
+    - [ ] Test the platform with a sample buggy Python project
+    - [ ] Document results in `walkthrough.md`

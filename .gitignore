@@ -1,0 +1,15 @@
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+storage/
+*.chroma/
+chroma_db/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.git.corrupt-backup-*/
+.claude/
