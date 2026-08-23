@@ -6,11 +6,16 @@ import logging
 from pathlib import Path
 from langchain_core.tools import tool
 
+from backend import resolve_project_path
+
 logger = logging.getLogger(__name__)
 
 SAFE_REPOSITORY_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
-REPOSITORY_STORAGE_ROOT = Path(os.getenv("REPO_STORAGE_ROOT","./storage/repositories")).resolve()
+# Anchored to the project root, not the CWD -- uvicorn started from another
+# directory would otherwise resolve this somewhere else entirely and report
+# every repository as missing.
+REPOSITORY_STORAGE_ROOT = resolve_project_path(os.getenv("REPO_STORAGE_ROOT", "./storage/repositories"))
 
 class UnsafePathError(ValueError):
     """Raised when a requested file path escapes the allowed repository sandbox."""

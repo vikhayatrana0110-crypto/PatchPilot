@@ -2,13 +2,10 @@ import logging
 import os
 import sqlite3
 
-from dotenv import load_dotenv
-
-# Must run BEFORE the backend imports below: several backend modules read
-# environment variables at import time (nodes.MODEL_NAME,
-# vector_store.EMBEDDING_MODEL, linter.REPOSITORY_STORAGE_ROOT). Loading the
-# .env any later leaves those constants stuck on their fallback defaults.
-load_dotenv()
+# Importing anything under `backend` runs backend/__init__.py first, which loads
+# the .env. Modules that read environment variables at import time therefore see
+# real values no matter which entry point got here.
+from backend import resolve_project_path
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -72,7 +69,16 @@ def create_debugging_workflow():
     #
     # check_same_thread=False because uvicorn serves requests on a thread pool
     # and sqlite3 otherwise refuses connections reused across threads.
-    db_path = os.getenv("DATABASE_URL", "sqlite:///./debugger.db").replace("sqlite:///", "")
+    database_url = os.getenv("DATABASE_URL", "sqlite:///./debugger.db")
+    if not database_url.startswith("sqlite:///"):
+        raise ValueError(
+            f"DATABASE_URL must be a sqlite:/// URL for SqliteSaver, got {database_url!r}. "
+            "For Postgres, swap in PostgresSaver from langgraph-checkpoint-postgres."
+        )
+    # Anchored to the project root: a bare './debugger.db' would otherwise be
+    # created next to whatever directory uvicorn was launched from, quietly
+    # starting a brand-new session store every time that differed.
+    db_path = resolve_project_path(database_url.removeprefix("sqlite:///"))
     conn = sqlite3.connect(db_path, check_same_thread=False)
     checkpointer = SqliteSaver(conn)
     checkpointer.setup()
@@ -80,7 +86,20 @@ def create_debugging_workflow():
     logger.info("Checkpointer: SqliteSaver at %s", db_path)
     return builder.compile(checkpointer=checkpointer)
 
-graph = create_debugging_workflow()
+# Built on first use rather than at import. Importing this module used to open a
+# SQLite connection and run setup() as a side effect, which meant merely
+# importing it -- during test collection, or from a module that only wanted
+# create_debugging_workflow -- created the database file.
+_graph = None
+
+
+def get_graph():
+    """Return the compiled workflow, building it once on first call."""
+    global _graph
+    if _graph is None:
+        _graph = create_debugging_workflow()
+    return _graph
+
 
 if __name__ == "__main__":
     #manual smoke test
@@ -93,7 +112,9 @@ if __name__ == "__main__":
 
 
     config = {"configurable": {"thread_id": "session_123"}}
-    
+
+    graph = get_graph()
+
     result = graph.invoke(initial_state, config=config)
     print(result)
 

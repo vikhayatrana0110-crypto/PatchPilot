@@ -415,9 +415,25 @@ def human_approval(state: DebuggingState) -> dict:
         "plan": state.get("debug_plan"),  
     })
 
-    approved = user_decison.get("approved", False)
-    feedback = user_decison.get("feedback", "")
+    # The resume payload arrives from an HTTP client once this runs behind the
+    # API, so it is untrusted input. Anything that is not a mapping used to raise
+    # AttributeError from inside the node, part-way through a resume, leaving the
+    # session wedged. Fail closed instead: no confirmed approval means no patch.
+    if not isinstance(user_decison, dict):
+        logger.warning(
+            "human_approval: expected a dict resume payload, got %s -- treating as rejection.",
+            type(user_decison).__name__,
+        )
+        user_decison = {
+            "approved": False,
+            "feedback": (
+                f"Malformed approval payload of type {type(user_decison).__name__}; "
+                "expected an object with an 'approved' field."
+            ),
+        }
 
+    approved = bool(user_decison.get("approved", False))
+    feedback = str(user_decison.get("feedback") or "")
 
     return {
         "human_approved": approved,

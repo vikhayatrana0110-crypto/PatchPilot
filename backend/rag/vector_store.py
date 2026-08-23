@@ -5,9 +5,13 @@ from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
+from backend import resolve_project_path
+
 logger = logging.getLogger(__name__)
 
-PERSIST_DIRECTORY: str = os.path.abspath(os.getenv("CHROMA_PERSIST_DIR", "./storage/vector_indexes"))
+# Anchored to the project root, not the CWD, so the index is the same one
+# regardless of where the process was launched from.
+PERSIST_DIRECTORY: str = str(resolve_project_path(os.getenv("CHROMA_PERSIST_DIR", "./storage/vector_indexes")))
 EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
 
