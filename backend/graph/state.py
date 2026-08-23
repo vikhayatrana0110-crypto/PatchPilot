@@ -33,6 +33,7 @@ class DebuggingState(TypedDict):
     patch_attempts: int #how many times generate_patch has run this session
 
     # human_in_the_loop
+    human_decision: str #"approve" | "reject" | "revise" -- revise sends the feedback back to generate_patch
     human_approved: bool #whether the human approves the patch #true =apply patch, false = discard patch
     human_feedback: str
 

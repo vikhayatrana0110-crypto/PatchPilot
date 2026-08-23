@@ -10,7 +10,11 @@ from backend import resolve_project_path
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
-from backend.graph.routing import route_after_patch, route_after_validation
+from backend.graph.routing import (
+    route_after_approval,
+    route_after_patch,
+    route_after_validation,
+)
 from backend.graph.nodes import (
     classify_error,
     finalize,
@@ -58,7 +62,11 @@ def create_debugging_workflow():
         route_after_validation,
         {"generate_patch": "generate_patch", "human_approval": "human_approval"},
     )
-    builder.add_edge("human_approval", "finalize")
+    builder.add_conditional_edges(
+        "human_approval",
+        route_after_approval,
+        {"generate_patch": "generate_patch", "finalize": "finalize"},
+    )
     builder.add_edge("finalize", END)
 
 

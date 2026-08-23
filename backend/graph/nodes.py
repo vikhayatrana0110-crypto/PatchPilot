@@ -218,13 +218,28 @@ def generate_patch(state: DebuggingState) -> dict:
     # On a retry, show the model how the last attempt failed. At temperature=0 it is
     # deterministic -- without this it regenerates the identical broken patch forever.
     previous = state.get("syntax_check_result") or ""
-    if previous and not previous.startswith("Syntax check passed"):
+    previous_tests = state.get("test_result") or ""
+    syntax_failed = bool(previous) and not previous.startswith("Syntax check passed")
+    tests_failed = previous_tests.startswith((TEST_STILL_FAILING, TEST_BROKEN_BY_PATCH))
+
+    if syntax_failed or tests_failed:
         user_content += (
             f"<previous_attempt_failed>\n{previous}\n"
-            f"{state.get('lint_result') or ''}\n{state.get('test_result') or ''}\n"
+            f"{state.get('lint_result') or ''}\n{previous_tests}\n"
             "</previous_attempt_failed>\n\n"
             "Your previous patch failed validation with the errors above. "
             "Produce a corrected patch that fixes them.\n\n"
+        )
+
+    # A human reviewed the patch and asked for changes. This is not a validation
+    # failure -- the patch may have been perfectly valid -- so it carries its own
+    # block, and it outranks anything above it.
+    if state.get("human_decision") == "revise" and state.get("human_feedback"):
+        user_content += (
+            f"<human_reviewer_feedback>\n{state['human_feedback']}\n</human_reviewer_feedback>\n\n"
+            "A human reviewed your previous patch and requested the changes above. "
+            "Their feedback takes priority over your earlier approach. Produce a revised "
+            "patch that addresses it.\n\n"
         )
 
     user_content += "Please generate the patch now."
@@ -257,6 +272,9 @@ def generate_patch(state: DebuggingState) -> dict:
         "patch_type": patch_type,
         "generated_patch": _extract_section(response_text, "patch"),
         "patch_attempts": state.get("patch_attempts", 0) + 1,
+        # Consumed once. Left set, a later automatic retry would re-inject stale
+        # reviewer feedback that has already been acted on.
+        "human_decision": "",
         "messages": [response],
     }
 
@@ -311,6 +329,47 @@ def _find_test_file(repo_root: Path, target_file:str) -> str | None:
             return rel
     return None
 
+
+_MAX_LISTED_FILES = 60
+
+
+def _list_repo_files(repo_root: Path) -> str:
+    """Comma-separated relative paths of the repo's Python files.
+
+    Fed back to the model when it names a file that doesn't exist, so the retry
+    picks from what is actually there instead of guessing a second time.
+    """
+    try:
+        paths = sorted(
+            p.relative_to(repo_root).as_posix()
+            for p in repo_root.rglob("*.py")
+            if "__pycache__" not in p.parts
+        )
+    except OSError as e:
+        logger.warning("_list_repo_files: could not walk %s: %s", repo_root, e)
+        return "(unavailable)"
+
+    if not paths:
+        return "(no Python files found)"
+    if len(paths) > _MAX_LISTED_FILES:
+        shown = paths[:_MAX_LISTED_FILES]
+        return f"{', '.join(shown)} ... (+{len(paths) - _MAX_LISTED_FILES} more)"
+    return ", ".join(paths)
+
+
+def _tests_passed(output: str) -> bool:
+    """Whether a run_unit_tests result represents a passing run."""
+    return output.startswith("Tests Passed")
+
+
+# Prefixes routing keys off. Kept as constants because route_after_validation
+# matches on them -- a reworded message must not silently disable the retry.
+TEST_FIXED = "Tests now pass"
+TEST_STILL_PASSING = "Tests passed"
+TEST_STILL_FAILING = "Tests STILL FAILING"
+TEST_BROKEN_BY_PATCH = "Tests BROKEN BY PATCH"
+TARGET_NOT_FOUND = "Target file not found"
+
 # NODE 5 -- Validate the patch
 def validate_patch(state: DebuggingState) -> dict:
     """
@@ -344,7 +403,19 @@ def validate_patch(state: DebuggingState) -> dict:
         return {"syntax_check_result": "Rejected: target_file resolves outside the repository.", "lint_result": "", "test_result": ""}
 
     if not full_path.is_file():
-        return {"syntax_check_result": f"Skipped: {target_file} was not found in the repository.", "lint_result": "", "test_result": ""}
+        # Recoverable: the model named a file that doesn't exist. Hand back the
+        # real file list so the retry chooses from what is actually there, and
+        # use a prefix routing recognises so this retries instead of going to a
+        # human with a patch that could never apply.
+        logger.warning("validate_patch: model targeted a nonexistent file %r", target_file)
+        return {
+            "syntax_check_result": (
+                f"{TARGET_NOT_FOUND}: '{target_file}' does not exist in this repository.\n"
+                f"Python files available: {_list_repo_files(repo_root)}"
+            ),
+            "lint_result": "",
+            "test_result": "",
+        }
 
     try:
         original_content = full_path.read_text(encoding="utf-8")
@@ -357,6 +428,17 @@ def validate_patch(state: DebuggingState) -> dict:
     # the write below and the revert, the repo isn't left silently mutated.
     backup_path = full_path.with_name(full_path.name + ".claude_bak")
 
+    # Baseline, captured BEFORE the patch is written. Without it "tests are red"
+    # is ambiguous: it could mean the patch failed, or that this repo already had
+    # failing tests. The reported bug is often itself a failing test, so
+    # fail -> pass is the normal success path and needs to be distinguishable.
+    test_file = _find_test_file(repo_root, target_file)
+    baseline_passed: bool | None = None
+    if test_file:
+        baseline_out = run_unit_tests.invoke({"repository_id": repo_id, "test_file_path": test_file})
+        baseline_passed = _tests_passed(baseline_out)
+        logger.info("validate_patch: baseline tests %s", "passed" if baseline_passed else "failed")
+
     try:
         new_content = patch if patch_type == "full" else _apply_snippet(original_content, patch)
 
@@ -368,12 +450,26 @@ def validate_patch(state: DebuggingState) -> dict:
 
         # Must run while the patch is still on disk -- the finally block below
         # reverts the file, so anything after that would test the ORIGINAL code.
-
-        test_file = _find_test_file(repo_root, target_file)
-        if test_file:
-            test_res = run_unit_tests.invoke({"repository_id": repo_id, "test_file_path": test_file})
-        else:
+        if not test_file:
             test_res = f"Skipped: no test file found for {target_file}."
+        else:
+            after_out = run_unit_tests.invoke({"repository_id": repo_id, "test_file_path": test_file})
+            after_passed = _tests_passed(after_out)
+
+            if after_passed and baseline_passed:
+                test_res = f"{TEST_STILL_PASSING} (they were already passing before the patch).\n{after_out}"
+            elif after_passed:
+                test_res = f"{TEST_FIXED} (they were failing before the patch).\n{after_out}"
+            elif baseline_passed:
+                test_res = (
+                    f"{TEST_BROKEN_BY_PATCH}: these tests passed before the patch and fail with it "
+                    f"applied.\n{after_out}"
+                )
+            else:
+                test_res = (
+                    f"{TEST_STILL_FAILING}: they were failing before the patch and still fail with "
+                    f"it applied, so the patch did not fix the bug.\n{after_out}"
+                )
 
         return {
             "syntax_check_result": syntax_res,
@@ -425,19 +521,36 @@ def human_approval(state: DebuggingState) -> dict:
             type(user_decison).__name__,
         )
         user_decison = {
-            "approved": False,
+            "action": "reject",
             "feedback": (
                 f"Malformed approval payload of type {type(user_decison).__name__}; "
-                "expected an object with an 'approved' field."
+                "expected an object with an 'action' field."
             ),
         }
 
-    approved = bool(user_decison.get("approved", False))
     feedback = str(user_decison.get("feedback") or "")
 
+    # Three outcomes, not two. "revise" is what makes this a loop rather than a
+    # one-shot gate: the feedback goes back to generate_patch for another attempt
+    # instead of ending the session. `approved` is still accepted so older
+    # callers that send a bare boolean keep working.
+    action = str(user_decison.get("action") or "").strip().lower()
+    if action not in ("approve", "reject", "revise"):
+        if action:
+            logger.warning("human_approval: unrecognised action %r, falling back to 'approved'", action)
+        action = "approve" if user_decison.get("approved") is True else "reject"
+
+    if action == "revise" and not feedback:
+        logger.warning("human_approval: 'revise' with no feedback is not actionable; treating as rejection.")
+        action = "reject"
+        feedback = "Revision requested but no feedback was provided."
+
+    logger.info("human_approval: decision=%s", action)
+
     return {
-        "human_approved": approved,
-        "human_feedback": feedback  
+        "human_decision": action,
+        "human_approved": action == "approve",
+        "human_feedback": feedback,
     }
 
 
@@ -498,6 +611,7 @@ def finalize(state: DebuggingState) -> dict:
             f"Patch applied to {target_file}.\n"
             f"Syntax check: {state.get('syntax_check_result', 'N/A')}\n"
             f"Lint result: {state.get('lint_result', 'N/A')}\n"
+            f"Tests: {(state.get('test_result') or 'N/A').splitlines()[0]}\n"
         )
 
     except Exception as e:
