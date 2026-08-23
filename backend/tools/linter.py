@@ -15,13 +15,15 @@ REPOSITORY_STORAGE_ROOT = Path(os.getenv("REPO_STORAGE_ROOT","./storage/reposito
 class UnsafePathError(ValueError):
     """Raised when a requested file path escapes the allowed repository sandbox."""
 
-def resolve_safe_path(repository_id: str, file_path: str) -> Path:
+def resolve_repository_root(repository_id: str) -> Path:
     """
-    Resolve file_path against REPOSITORY_STORAGE_ROOT/<repository_id>/ and
-    verify the final, symlink-resolved path is actually contained within it.
- 
-    file_path is treated as relative to the repository root -- callers
-    should not (and cannot usefully) pass an absolute host path.
+    Resolve the on-disk root of a repository from its id.
+
+    This is the ONLY place a repository_id becomes a path. Every caller that
+    needs a repo root derives it from here rather than carrying its own copy --
+    otherwise a node can write a patch to one directory while the validation
+    tools read another, and the mismatch surfaces as validation passing against
+    code that was never patched.
     """
     if not repository_id:
         raise UnsafePathError("repository_id is required.")
@@ -39,7 +41,19 @@ def resolve_safe_path(repository_id: str, file_path: str) -> Path:
     except ValueError:
         raise UnsafePathError(f"Invalid repository_id '{repository_id}'.")
 
-    
+    return repo_root
+
+
+def resolve_safe_path(repository_id: str, file_path: str) -> Path:
+    """
+    Resolve file_path against REPOSITORY_STORAGE_ROOT/<repository_id>/ and
+    verify the final, symlink-resolved path is actually contained within it.
+ 
+    file_path is treated as relative to the repository root -- callers
+    should not (and cannot usefully) pass an absolute host path.
+    """
+    repo_root = resolve_repository_root(repository_id)
+
     # Reject absolute paths outright -- they have no valid meaning here and
     # otherwise os.path.join would silently discard the repo_root prefix.
 

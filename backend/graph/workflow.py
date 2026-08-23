@@ -1,4 +1,6 @@
 import logging
+import os
+import sqlite3
 
 from dotenv import load_dotenv
 
@@ -8,7 +10,7 @@ from dotenv import load_dotenv
 # .env any later leaves those constants stuck on their fallback defaults.
 load_dotenv()
 
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 from backend.graph.routing import route_after_patch, route_after_validation
@@ -63,7 +65,19 @@ def create_debugging_workflow():
     builder.add_edge("finalize", END)
 
 
-    checkpointer = MemorySaver()  # In-memory checkpointing for now; can be replaced with a persistent storage solution later.
+    # A file-backed checkpointer, not an in-memory one. human_approval calls
+    # interrupt(), which serializes the whole session and returns; the resume
+    # arrives later as a SEPARATE process/request. An in-process dict would lose
+    # the session on restart and would not be visible to a second uvicorn worker.
+    #
+    # check_same_thread=False because uvicorn serves requests on a thread pool
+    # and sqlite3 otherwise refuses connections reused across threads.
+    db_path = os.getenv("DATABASE_URL", "sqlite:///./debugger.db").replace("sqlite:///", "")
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    checkpointer = SqliteSaver(conn)
+    checkpointer.setup()
+
+    logger.info("Checkpointer: SqliteSaver at %s", db_path)
     return builder.compile(checkpointer=checkpointer)
 
 graph = create_debugging_workflow()
@@ -73,7 +87,6 @@ if __name__ == "__main__":
     # (`python -m backend.graph.workflow`), never on import.
     initial_state = {
         "repository_id": "my_repo",
-        "repository_path": "./storage/repositories/my_repo",
         "relative_file_path": "src/example.py",
         "issue_description": "Paste a bug description or stack trace here.",
     }

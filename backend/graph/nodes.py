@@ -10,7 +10,7 @@ from langgraph.types import interrupt
 from backend.graph.state import DebuggingState
 from backend.tools.code_search import search_codebase
 from backend.tools.dependency_inspector import inspect_dependencies
-from backend.tools.linter import run_linter, run_syntax_check
+from backend.tools.linter import run_linter, run_syntax_check, resolve_repository_root, UnsafePathError
 from backend.tools.stack_trace import analyze_stack_trace
 from backend.tools.test_runner import run_unit_tests
 
@@ -81,7 +81,7 @@ def retrieve_context(state: DebuggingState) -> dict:
     })
 
     deps = inspect_dependencies.invoke({
-        "repository_path": state["repository_path"]
+        "repository_id": state["repository_id"]
     })
 
     return {
@@ -322,16 +322,22 @@ def validate_patch(state: DebuggingState) -> dict:
     target_file = state.get("target_file")
     patch = state.get("generated_patch")
     patch_type = state.get("patch_type", "snippet")
-    repo_path = state.get("repository_path")
     repo_id = state.get("repository_id")
 
-    if not target_file or not patch or not repo_path or not repo_id:
+    if not target_file or not patch or not repo_id:
         return {"syntax_check_result": "Skipped: Missing file, patch, or repository info.", "lint_result": "", "test_result": ""}
+
+    # Derived from the id, never carried in state -- this is the same call the
+    # syntax/lint/test tools make internally, so the file this node writes is
+    # guaranteed to be the file they read back.
+    try:
+        repo_root = resolve_repository_root(repo_id)
+    except UnsafePathError as e:
+        return {"syntax_check_result": f"Rejected: {e}", "lint_result": "", "test_result": ""}
 
     # Defense in depth: generate_patch already screens target_file, but this is the
     # node that actually writes to disk, so re-confirm the resolved path can't escape
     # the repo root before touching anything.
-    repo_root = Path(repo_path).resolve()
     full_path = (repo_root / target_file).resolve()
     if not full_path.is_relative_to(repo_root):
         logger.error("validate_patch: resolved path %s escapes repo root %s", full_path, repo_root)
@@ -430,13 +436,13 @@ def finalize(state: DebuggingState) -> dict:
     target_file = state.get("target_file")
     patch = state.get("generated_patch")
     patch_type = state.get("patch_type", "snippet")
-    repo_path_raw = state.get("repository_path")
+    repo_id = state.get("repository_id")
 
     # Checked BEFORE approval on purpose: when routing skips human_approval
     # (nothing was generated to review), human_approved is simply absent -- and
     # an absent key is indistinguishable from an explicit rejection, so checking
     # approval first would report "human rejected" for a patch no human ever saw.
-    if not target_file or not patch or not repo_path_raw:
+    if not target_file or not patch or not repo_id:
         return {"final_report": "Nothing to apply: no patch was generated for this issue."}
 
     if not state.get("human_approved", False):
@@ -448,7 +454,11 @@ def finalize(state: DebuggingState) -> dict:
         return {"final_report": report}
 
     #Apply Permanently
-    repo_path = Path(repo_path_raw).resolve()
+    try:
+        repo_path = resolve_repository_root(repo_id)
+    except UnsafePathError as e:
+        return {"final_report": f"Rejected: {e}"}
+
     full_path = (repo_path / target_file).resolve()
 
     

@@ -2,7 +2,7 @@ import sys
 import subprocess
 import logging
 from langchain_core.tools import tool
-from backend.tools.linter import resolve_safe_path, UnsafePathError, REPOSITORY_STORAGE_ROOT
+from backend.tools.linter import resolve_safe_path, UnsafePathError, resolve_repository_root
 
 logger = logging.getLogger( __name__)
 
@@ -28,7 +28,7 @@ def run_unit_tests(repository_id: str, test_file_path: str) -> str:
         return f"Error: {e}"
 
     try:
-        repo_root = (REPOSITORY_STORAGE_ROOT / repository_id).resolve()
+        repo_root = resolve_repository_root(repository_id)
 
         result = subprocess.run(
             [sys.executable,"-m","pytest",str(safe_path),"-v","--no-header"],

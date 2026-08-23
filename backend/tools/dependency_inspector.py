@@ -3,6 +3,8 @@ import logging
 from charset_normalizer import from_path
 from langchain_core.tools import tool
 
+from backend.tools.linter import resolve_repository_root, UnsafePathError
+
 logger = logging.getLogger(__name__)
 
 DEPENDENCY_FILES=[
@@ -16,22 +18,27 @@ DEPENDENCY_FILES=[
 ]
 
 @tool
-def inspect_dependencies(repository_path: str) -> str:
+def inspect_dependencies(repository_id: str) -> str:
     """
     Inspects common dependency files (like requirements.txt or pyproject.toml) 
     in the repository and returns their contents.
     
     Args:
-        repository_path: The absolute path to the root of the repository.
+        repository_id: The id of the repository, e.g. 'my_repo'.
         
     Returns:
         A string containing the contents of any discovered dependency files.
     """
-    logger.info("AGENT INVOKED - inspect_dependencies for repo path: '%s'",repository_path)
+    logger.info("AGENT INVOKED - inspect_dependencies for repo: '%s'",repository_id)
 
-    repo_path = os.path.abspath(repository_path)
+    # Takes an id, not a path, so it lands in the same directory the linter and
+    # test runner use. A path argument here would be a second source of truth.
+    try:
+        repo_path = str(resolve_repository_root(repository_id))
+    except UnsafePathError as e:
+        return f"error: {e}"
 
-    if not os.path.isdir(repository_path):
+    if not os.path.isdir(repo_path):
         return f"error: the repo path '{repo_path}' does not exist."
 
     found_files=[]

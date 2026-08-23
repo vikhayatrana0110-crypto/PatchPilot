@@ -8,7 +8,6 @@ from typing_extensions import TypedDict
 class DebuggingState(TypedDict):
     # input set once at start of debugging session
     repository_id: str #eg my_repo
-    repository_path: str #absolute path to the repo on disk, e.g. storage/repositories/<repository_id>
     relative_file_path: str #eg src/my_file.py
     issue_description: str #user description of the issue to debug
 

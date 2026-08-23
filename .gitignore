@@ -8,6 +8,11 @@ __pycache__/
 storage/
 *.chroma/
 chroma_db/
+
+# LangGraph session checkpoints - holds live session state and repo code
+*.db
+*.db-shm
+*.db-wal
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
