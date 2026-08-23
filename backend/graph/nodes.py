@@ -1,30 +1,58 @@
+import logging
 import os
 import re
-import logging
 from pathlib import Path
-from langchain_groq import ChatGroq
+
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_groq import ChatGroq
 from langgraph.types import interrupt
 
 from backend.graph.state import DebuggingState
-from backend.tools.stack_trace import analyze_stack_trace
 from backend.tools.code_search import search_codebase
 from backend.tools.dependency_inspector import inspect_dependencies
-from backend.tools.linter import run_syntax_check, run_linter
+from backend.tools.linter import run_linter, run_syntax_check
+from backend.tools.stack_trace import analyze_stack_trace
+from backend.tools.test_runner import run_unit_tests
 
 logger = logging.getLogger(__name__)
 
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+MODEL_NAME = os.environ.get("MODEL_NAME", "openai/gpt-oss-120b")
+MODEL_TEMPERATURE = float(os.environ.get("MODEL_TEMPERATURE", "0"))
 
 
 def _get_llm() -> ChatGroq:
-    return ChatGroq(model=GROQ_MODEL, temperature=0)
+    return ChatGroq(model=MODEL_NAME, temperature=MODEL_TEMPERATURE)
+
+_SECTION_TAGS = (
+    "error_classification",
+    "root_cause_analysis",
+    "debug_plan",
+    "target_file",
+    "patch_type",
+    "patch",
+)
 
 
 def _extract_section(text: str, tag: str) -> str:
-    """Pull the contents of a single <tag>...</tag> block from the model's response."""
+    """Pull the contents of a <tag>...</tag> block, tolerating a missing closing tag.
+
+    Returns "" when the tag is absent entirely -- callers must handle that, rather
+    than silently receiving the whole response as if it were the section.
+    """
+    # A properly closed block always wins, so patch bodies containing markup or
+    # generics (List<int>, <div>) are never truncated.
     match = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", text, re.DOTALL)
-    return match.group(1).strip() if match else text.strip()
+    if match:
+        return match.group(1).strip()
+
+    # Closing tag missing -- models drop it regularly. Take everything up to the
+    # next *known* section tag, or end of string.
+    others = "|".join(t for t in _SECTION_TAGS if t != tag)
+    match = re.search(rf"<{tag}>\s*(.*?)\s*(?=<(?:{others})>|\Z)", text, re.DOTALL)
+    if not match:
+        logger.warning("_extract_section: <%s> not found in model response", tag)
+        return ""
+    return match.group(1).strip()
 
 
 # NODE 1 -- parse issue
@@ -185,8 +213,22 @@ def generate_patch(state: DebuggingState) -> dict:
         f"Plan: {state.get('debug_plan', 'N/A')}\n"
         f"</bug_context>\n\n"
         f"<code_context>\n{state.get('retrieved_context') or 'Not provided'}\n</code_context>\n\n"
-        "Please generate the patch now."
     )
+
+    # On a retry, show the model how the last attempt failed. At temperature=0 it is
+    # deterministic -- without this it regenerates the identical broken patch forever.
+    previous = state.get("syntax_check_result") or ""
+    if previous and not previous.startswith("Syntax check passed"):
+        user_content += (
+            f"<previous_attempt_failed>\n{previous}\n"
+            f"{state.get('lint_result') or ''}\n{state.get('test_result') or ''}\n"
+            "</previous_attempt_failed>\n\n"
+            "Your previous patch failed validation with the errors above. "
+            "Produce a corrected patch that fixes them.\n\n"
+        )
+
+    user_content += "Please generate the patch now."
+
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_content)
@@ -195,7 +237,13 @@ def generate_patch(state: DebuggingState) -> dict:
     response_text = str(response.content)
 
     target_file = _extract_section(response_text, "target_file")
-    if not target_file or "\n" in target_file or target_file.startswith("/") or ".." in target_file:
+    if (
+        not target_file
+        or "\n" in target_file
+        or target_file.startswith("/")
+        or ".." in target_file
+        or target_file.strip().lower() in ("n/a", "none", "unknown")
+    ):
         logger.error("generate_patch: model returned an unusable target_file: %r", target_file[:200])
         target_file = None
 
@@ -208,6 +256,7 @@ def generate_patch(state: DebuggingState) -> dict:
         "target_file": target_file,
         "patch_type": patch_type,
         "generated_patch": _extract_section(response_text, "patch"),
+        "patch_attempts": state.get("patch_attempts", 0) + 1,
         "messages": [response],
     }
 
@@ -244,6 +293,24 @@ def _apply_snippet(original_content: str, patch_block: str) -> str:
     return original_content.replace(search_part, replace_part, 1)
 
 
+def _find_test_file(repo_root: Path, target_file:str) -> str | None:
+    """
+    Locate a conventional pytest file for target_file, relative to repo_root.
+    run_unit_tests needs a concrete file path, and nothing in the state carries
+    one -- so probe the usual layouts and give up quietly if none exist.
+    """
+    target = Path(target_file)
+    stem = target.stem
+    parent = target.parent.as_posix()
+
+    candidates = [f"tests/test_{stem}.py", f"test_{stem}.py" ,f"tests/{stem}_test.py"]
+    if parent and parent != ".":
+        candidates.insert (0, f"{parent}/test_{stem}.py")
+    for rel in candidates:
+        if (repo_root / rel).is_file():
+            return rel
+    return None
+
 # NODE 5 -- Validate the patch
 def validate_patch(state: DebuggingState) -> dict:
     """
@@ -259,7 +326,7 @@ def validate_patch(state: DebuggingState) -> dict:
     repo_id = state.get("repository_id")
 
     if not target_file or not patch or not repo_path or not repo_id:
-        return {"syntax_check_result": "Skipped: Missing file, patch, or repository info.", "lint_result": ""}
+        return {"syntax_check_result": "Skipped: Missing file, patch, or repository info.", "lint_result": "", "test_result": ""}
 
     # Defense in depth: generate_patch already screens target_file, but this is the
     # node that actually writes to disk, so re-confirm the resolved path can't escape
@@ -268,16 +335,16 @@ def validate_patch(state: DebuggingState) -> dict:
     full_path = (repo_root / target_file).resolve()
     if not full_path.is_relative_to(repo_root):
         logger.error("validate_patch: resolved path %s escapes repo root %s", full_path, repo_root)
-        return {"syntax_check_result": "Rejected: target_file resolves outside the repository.", "lint_result": ""}
+        return {"syntax_check_result": "Rejected: target_file resolves outside the repository.", "lint_result": "", "test_result": ""}
 
     if not full_path.is_file():
-        return {"syntax_check_result": f"Skipped: {target_file} was not found in the repository.", "lint_result": ""}
+        return {"syntax_check_result": f"Skipped: {target_file} was not found in the repository.", "lint_result": "", "test_result": ""}
 
     try:
         original_content = full_path.read_text(encoding="utf-8")
     except OSError as e:
         logger.error("validate_patch: could not read %s: %s", full_path, e)
-        return {"syntax_check_result": f"Skipped: could not read {target_file} ({e}).", "lint_result": ""}
+        return {"syntax_check_result": f"Skipped: could not read {target_file} ({e}).", "lint_result": "", "test_result": ""}
 
     # A same-directory backup on disk, not just an in-memory variable — if this
     # process gets killed outright (OOM, container eviction, tool timeout) between
@@ -293,11 +360,24 @@ def validate_patch(state: DebuggingState) -> dict:
         syntax_res = run_syntax_check.invoke({"repository_id": repo_id, "file_path": target_file})
         lint_res = run_linter.invoke({"repository_id": repo_id, "file_path": target_file})
 
-        return {"syntax_check_result": syntax_res, "lint_result": lint_res}
+        # Must run while the patch is still on disk -- the finally block below
+        # reverts the file, so anything after that would test the ORIGINAL code.
+
+        test_file = _find_test_file(repo_root, target_file)
+        if test_file:
+            test_res = run_unit_tests.invoke({"repository_id": repo_id, "test_file_path": test_file})
+        else:
+            test_res = f"Skipped: no test file found for {target_file}."
+
+        return {
+            "syntax_check_result": syntax_res,
+            "lint_result": lint_res,
+            "test_result": test_res,
+            }
 
     except Exception as e:
         logger.error("Failed to validate patch: %s", e, exc_info=True)
-        return {"syntax_check_result": f"Patch application failed: {e}", "lint_result": "N/A"}
+        return {"syntax_check_result": f"Patch application failed: {e}", "lint_result": "N/A", "test_result": ""}
 
     finally:
         # Always put the working tree back — success, failure, or anything in
@@ -325,6 +405,7 @@ def human_approval(state: DebuggingState) -> dict:
         "patch": state.get("generated_patch"),
         "syntax_check_result": state.get("syntax_check_result"),
         "lint_result": state.get("lint_result"),
+        "test_result": state.get("test_result"),
         "plan": state.get("debug_plan"),  
     })
 
@@ -346,24 +427,39 @@ def finalize(state: DebuggingState) -> dict:
     """
     logger.info("Node: finalize")
 
-    approved = state.get("human_approved", False)
     target_file = state.get("target_file")
+    patch = state.get("generated_patch")
+    patch_type = state.get("patch_type", "snippet")
+    repo_path_raw = state.get("repository_path")
 
-    if not approved:
+    # Checked BEFORE approval on purpose: when routing skips human_approval
+    # (nothing was generated to review), human_approved is simply absent -- and
+    # an absent key is indistinguishable from an explicit rejection, so checking
+    # approval first would report "human rejected" for a patch no human ever saw.
+    if not target_file or not patch or not repo_path_raw:
+        return {"final_report": "Nothing to apply: no patch was generated for this issue."}
+
+    if not state.get("human_approved", False):
         report = (
             f"Debugging session aborted.\n"
-            f"human rejected the path for {target_file}.\n"
+            f"human rejected the patch for {target_file}.\n"
             f"Feedback: {state.get('human_feedback', 'No feedback provided.')}"
         )
         return {"final_report": report}
 
-
     #Apply Permanently
-    patch = state.get("generated_patch")
-    patch_type = state.get("patch_type", "snippet")
-    repo_path = Path(state.get("repository_path").resolve())
+    repo_path = Path(repo_path_raw).resolve()
     full_path = (repo_path / target_file).resolve()
 
+    
+    # Same defense-in-depth check validate_patch does at line 269 -- this write is
+    # permanent, so it needs the containment guard more than the temporary one does.
+    if not full_path.is_relative_to(repo_path):
+        logger.error("finalize: resolved path %s escapes repo root %s", full_path, repo_path)
+        return {"final_report": "Rejected: target_file resolves outside the repository."}
+
+    if not full_path.is_file():
+        return {"final_report": f"Skipped: {target_file} was not found in the repository."}
     try:
         orignal_content = full_path.read_text(encoding="utf-8")
         new_content = patch if patch_type == "full" else _apply_snippet(orignal_content, patch)

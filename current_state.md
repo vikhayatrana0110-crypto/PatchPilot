@@ -2,7 +2,7 @@
 
 This document captures the exact current state of the project as of August 2026.
 
-## Completed (Steps 1-3)
+## Completed (Steps 1-4)
 
 ### Step 1 - Environment Setup
 - `requirements.txt` created with: `langchain`, `langchain-core`, `langchain-community`, `langchain-groq`, `langchain-text-splitters`, `langchain-huggingface`, `langchain-chroma`, `langgraph`, `chromadb`, `faiss-cpu`, `sentence-transformers`, `fastapi`, `uvicorn`, `python-dotenv`, `streamlit`, `pydantic`, `charset-normalizer`, `ruff`
@@ -22,8 +22,17 @@ This document captures the exact current state of the project as of August 2026.
 - `test_runner.py`: Implemented, imports sandbox logic from `linter.py` (no duplication).
 - **NOTE**: Tools in Step 3 have NOT been individually smoke-tested yet.
 
-## Not Started (Steps 4-7)
-- **Step 4**: LangGraph Workflow & State Machine (`state.py`, `nodes.py`, `workflow.py`)
+### Step 4 - LangGraph Workflow & State Machine
+- `state.py`: `DebuggingState` TypedDict covering session inputs (`repository_id`, `repository_path`, `relative_file_path`, `issue_description`), tool outputs, LLM output (including `patch_type`), validation results, human approval fields, the final report, and an `add_messages`-annotated message history.
+- `nodes.py`: 7 nodes implemented — `parse_issue`, `retrieve_context`, `classify_error`, `generate_patch`, `validate_patch`, `human_approval`, `finalize`. LLM sections are parsed from deterministic XML `<tags>` via `_extract_section`, which now tolerates a missing closing tag and returns `""` (rather than the whole response) when a tag is absent.
+- `routing.py`: two conditional-edge functions. `route_after_patch` skips validation and human approval when no patch was generated (routes straight to `finalize`). `route_after_validation` routes a syntax/apply failure back to `generate_patch` up to `MAX_AGENT_RETRIES` (3), otherwise forward to `human_approval`.
+- `workflow.py`: `StateGraph` — `START -> parse_issue -> retrieve_context -> classify_error -> generate_patch`, then conditional edges out of `generate_patch` and `validate_patch`, converging on `human_approval -> finalize -> END`. Compiled with a `MemorySaver` checkpointer.
+- Human-in-the-loop: `human_approval` calls `interrupt()`; the session resumes with `Command(resume={"approved": ..., "feedback": ...})` against the same `thread_id`.
+- `load_dotenv()` runs at the top of `workflow.py`, before backend imports, because `nodes.MODEL_NAME`, `vector_store.EMBEDDING_MODEL`, and `linter.REPOSITORY_STORAGE_ROOT` are read at import time.
+- Model config is env-driven: `MODEL_NAME` (default `openai/gpt-oss-120b`) and `MODEL_TEMPERATURE` (default `0`).
+- **NOTE**: exercised only via the manual smoke test in `workflow.py` `__main__`; no automated tests yet.
+
+## Not Started (Steps 5-7)
 - **Step 5**: FastAPI Backend Services (`main.py`, API routes)
 - **Step 6**: Streamlit UI (`app.py`)
 - **Step 7**: Testing & Walkthrough
@@ -33,3 +42,12 @@ This document captures the exact current state of the project as of August 2026.
 2. `code_splitter.py`: Initially produced 0 chunks because only `__init__.py` (empty file) was being loaded. Fixed by loading the correct directory.
 3. `vector_store.py`: Original design had optional `filter_dict` — allowed cross-repository data leakage. Fixed by making `repository_id` mandatory in `search()` and `get_retriever()`.
 4. `linter.py`: `logger.info` had 3 args but only 1 `%s` placeholder. Fixed by adding second `%s`.
+5. `finalize`: applied the patch without a containment check and called `.resolve()` on a `str`. Fixed by resolving the repo path first, re-running the `is_relative_to` guard before the permanent write, and bailing out when target file / patch / repo path are missing.
+6. `_extract_section`: fell back to returning the entire model response when a tag was missing, so a dropped `<target_file>` silently became the whole answer. Now returns `""` and logs a warning.
+7. `generate_patch`: accepted `"N/A"` / `"none"` / `"unknown"` as a `target_file`. Now rejected alongside absolute paths and `..`.
+
+## Open Questions
+- How the `interrupt()` / resume cycle maps onto a stateless REST API in Step 5 — the approval endpoint needs a session store keyed by `thread_id`.
+- `validate_patch` mutates the real file with a `.claude_bak` backup and reverts in a `finally` — safety under concurrent sessions is unverified.
+- Groq free-tier rate limits under a multi-step agent loop — untested.
+- `.env.example` is missing from the repo root even though `.env` exists.

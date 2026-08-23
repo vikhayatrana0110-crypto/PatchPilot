@@ -1,11 +1,14 @@
-from typing import Annotated, Optional
-from typing_extensions import TypedDict
-from langgraph.graph.message import add_messages
+from typing import Annotated
+
 from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
+from typing_extensions import TypedDict
+
 
 class DebuggingState(TypedDict):
     # input set once at start of debugging session
     repository_id: str #eg my_repo
+    repository_path: str #absolute path to the repo on disk, e.g. storage/repositories/<repository_id>
     relative_file_path: str #eg src/my_file.py
     issue_description: str #user description of the issue to debug
 
@@ -25,6 +28,10 @@ class DebuggingState(TypedDict):
     # validation results
     syntax_check_result: str #result of syntax check after applying patch
     lint_result: str #result of linting after applying patch
+    test_result: str #result of running the target file's unit tests while patched
+
+    # retry control
+    patch_attempts: int #how many times generate_patch has run this session
 
     # human_in_the_loop
     human_approved: bool #whether the human approves the patch #true =apply patch, false = discard patch
