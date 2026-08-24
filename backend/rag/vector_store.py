@@ -118,6 +118,29 @@ class CodeVectorStore:
             search_kwargs={"k": k, "filter": {"repository_id": repository_id}}
         )
 
+
+    def delete_repository(self,repository_id: str) -> int:
+        """
+        Remove every chunk belonging to one repository.
+        Needed before re-indexing an upload. Without it a second upload of the
+        same repository_id leaves the previous version's chunks in the
+        collection, and retrieval silently mixes two versions of one file.
+        `clear()` is not a substitute -- it wipes every repository.
+        """
+
+        if not repository_id:
+            raise ValueError("Repository_id is required.")
+
+        collection = self.vectorstore._collection
+        existing = collection.get(where={"repository_id": repository_id},include=[])
+
+        ids = existing.get("ids") or []
+        if ids: 
+            collection.delete(ids=ids)
+        logger.info("Deleted %d chunks for repository '%s'", len(ids), repository_id)
+
+        return len(ids)
+    
     def clear(self) -> None:
         """Clear all documents from the collection (all repositories)."""
         try:
@@ -131,3 +154,17 @@ class CodeVectorStore:
         except Exception as e:
             logger.error("Failed to clear vector store: %s", e, exc_info=True)
             raise
+
+
+_store: Optional["CodeVectorStore"] = None
+
+def get_vector_store() -> "CodeVectorStore":
+    """
+    process wide lazy singleton for vector store.
+    both the search tool and upload endpoint share this one
+    """
+
+    global _store
+    if _store is None:
+        _store = CodeVectorStore()
+    return _store
