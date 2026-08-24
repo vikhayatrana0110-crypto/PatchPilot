@@ -1,3 +1,5 @@
+import os
+import shutil
 import sys
 import subprocess
 import logging
@@ -28,14 +30,29 @@ def run_unit_tests(repository_id: str, test_file_path: str) -> str:
         return f"Error: {e}"
 
     try:
+
         repo_root = resolve_repository_root(repository_id)
 
+        # Bytecode caching silently defeats the entire test signal. Python
+        # validates a .pyc by source mtime AND size -- and 'return a + b' and
+        # 'return a - b' are the same size. validate_patch writes the patch,
+        # pytest compiles it, the finally reverts the source, and the .pyc still
+        # looks valid: a later run imports the PATCHED bytecode while the file on
+        # disk holds the original. Tests then pass against code that does not
+        # exist, which is worse than no test signal at all.
+
+
+        for cache in repo_root.rglob("__pycache__"):
+            shutil.rmtree(cache, ignore_errors=True)
+
+
         result = subprocess.run(
-            [sys.executable,"-m","pytest",str(safe_path),"-v","--no-header"],
+            [sys.executable,"-m","pytest",str(safe_path),"-v","--no-header","-p", "no:cacheprovider"],
             capture_output=True,
             text=True,
             timeout=30,
-            cwd=str(repo_root)
+            cwd=str(repo_root),
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         )
 
         output = result.stdout.strip() or result.stderr.strip()
