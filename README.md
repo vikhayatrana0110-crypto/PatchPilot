@@ -55,6 +55,23 @@ You get back a patch, the file it targets, and three validation results. Then yo
 
 `walkthrough.md` has a full session captured verbatim, including the parts a single successful run doesn't prove.
 
+## Tests
+
+```bash
+pytest
+```
+
+25 tests covering the six tools in isolation. No Groq calls, so it runs in about
+15 seconds and fails for real reasons instead of rate limits. Each run builds a
+throwaway repository under `storage/repositories/` and deletes it afterwards, so
+it won't touch anything you've uploaded.
+
+The one worth knowing about is `test_stale_bytecode_cannot_fake_a_pass`. Python
+validates a `.pyc` by source mtime and size, and `a + b` and `a - b` are the same
+size, so cached bytecode from a passing run can survive a revert and report
+PASSED for code that is no longer on disk. That silently broke the entire test
+signal once. The test exists so it can't come back quietly.
+
 ## How it works
 
 Seven nodes in a LangGraph state machine:
