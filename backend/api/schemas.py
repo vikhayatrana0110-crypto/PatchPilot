@@ -39,7 +39,7 @@ class UploadResponse(BaseModel):
     message: str = Field(..., description= "Human-readable summary of what happened")
 
 class RepositorySummary(BaseModel):
-    """one uploaded reposiotry, as listed GET /repositories."""
+    """One uploaded repository, as listed by GET /repositories."""
 
     repository_id: str = Field(
         ...,
@@ -48,7 +48,7 @@ class RepositorySummary(BaseModel):
     )
     chunks_indexed: int = Field(
         ...,
-        description="Chunks in the vector store. zero means it needs re-uploading"
+        description="Chunks in the vector store. Zero means it needs re-uploading."
     )
     
 
