@@ -1,0 +1,9 @@
+# Normalise line endings. The repo had a mix of CRLF and LF, which made any edit
+# through a tool that rewrites the whole file show up as a diff on every line.
+* text=auto eol=lf
+
+# Binary files git should never touch
+*.png binary
+*.jpg binary
+*.zip binary
+*.db binary

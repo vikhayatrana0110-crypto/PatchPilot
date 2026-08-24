@@ -8,7 +8,6 @@ routing.MAX_AGENT_RETRIES), so an entry point that forgot to call load_dotenv()
 before importing them would silently get fallback defaults instead.
 """
 
-import os
 from pathlib import Path
 
 from dotenv import load_dotenv
