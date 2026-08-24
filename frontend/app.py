@@ -21,11 +21,13 @@ import streamlit as st
 
 API_BASE = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 
-"""
-Three very different timeouts. A debugging run makes LLM calls, lints, and runs pytest -- possibly three times over, since the agent retries -- so a
-short timeout would kill legitimate work. But requests defaults to NO timeout,
-which hangs forever against a dead server.
-"""
+# Three very different timeouts. A debugging run makes LLM calls, lints, and
+# runs pytest -- possibly three times over, since the agent retries -- so a
+# short timeout would kill legitimate work. But requests defaults to NO timeout,
+# which hangs forever against a dead server.
+#
+# Note: this MUST stay a # comment. Streamlit renders any bare expression at
+# module level, and a triple-quoted string is one -- it would appear on the page.
 HEALTH_TIMEOUT = 3
 QUICK_TIMEOUT = 10
 UPLOAD_TIMEOUT = 120
