@@ -1,7 +1,7 @@
 # Walkthrough
 
 A complete debugging session against a repository the platform had never seen,
-captured verbatim on 24 August 2026. Nothing below is reconstructed — every
+captured verbatim on 24 August 2026. Nothing below is reconstructed: every
 timing, patch, and test result is copied from the actual run.
 
 ## The subject
@@ -19,7 +19,7 @@ inventory/
 └── README.md
 ```
 
-The bug is a plausible one — an operator slip that produces a wrong number
+The bug is a plausible one, an operator slip that produces a wrong number
 rather than a crash:
 
 ```python
@@ -40,7 +40,7 @@ tests/test_stock.py::test_low_stock  PASSED
 ## 1. Upload
 
 The archive was produced by compressing a folder, so everything inside sits
-under `inventory-main/` — exactly what GitHub's "Download ZIP" gives you.
+under `inventory-main/`, exactly what GitHub's "Download ZIP" gives you.
 
 ```
 POST /repositories/upload    (multipart: file=inventory.zip, repository_id=inventory)
@@ -80,7 +80,7 @@ POST /debug
 matching code, read the dependency file, called the model twice, wrote a patch,
 applied it behind a backup, ran three validators, and reverted the file.
 
-The response is `awaiting_approval` — the graph is paused mid-execution,
+The response is `awaiting_approval`: the graph is paused mid-execution,
 checkpointed to SQLite, waiting for a human.
 
 ## 3. What came back
@@ -114,7 +114,7 @@ Validation:
               tests/test_stock.py::test_low_stock  PASSED    [100%]
 ```
 
-The tests line is the one worth reading twice. It does not say "tests pass" —
+The tests line is the one worth reading twice. It does not say "tests pass";
 it says they **were failing and now are not**, because the suite is run once
 before the patch and once after. Without that comparison, a repository with
 pre-existing failures is indistinguishable from a patch that did not work, and
@@ -156,7 +156,7 @@ def total_value(items):
 ```
 
 It kept the fix and added the example, with values consistent with the existing
-test. The revised patch was validated from scratch — all three checks green
+test. The revised patch was validated from scratch: all three checks green
 again.
 
 ## 5. Approve
@@ -194,12 +194,12 @@ def total_value(items):
 | Step | Duration |
 |---|---|
 | Upload and index 5 files | under a second |
-| `POST /debug` — retrieve, diagnose, patch, validate | 4.7 s |
-| `POST /approve` with `revise` — regenerate and re-validate | 2.4 s |
-| `POST /approve` with `approve` — apply | under a second |
+| `POST /debug`: retrieve, diagnose, patch, validate | 4.7 s |
+| `POST /approve` with `revise`: regenerate and re-validate | 2.4 s |
+| `POST /approve` with `approve`: apply | under a second |
 
 Both slow calls are synchronous and block. The endpoints are plain `def`, not
-`async def`, so FastAPI dispatches them to a threadpool — `/health` answers in
+`async def`, so FastAPI dispatches them to a threadpool; `/health` answers in
 2 ms while a debug run is in flight.
 
 ## What this run demonstrates
@@ -208,7 +208,7 @@ Both slow calls are synchronous and block. The endpoints are plain `def`, not
 patch landed on the one that was wrong.
 
 **The patch was verified before a human saw it.** Syntax, lint, and a real
-pytest run against the patched file — then reverted. The reviewer is deciding
+pytest run against the patched file, then reverted. The reviewer is deciding
 about a change that has already been shown to work, not guessing.
 
 **The test signal is comparative, not absolute.** "Were failing, now pass" is a
