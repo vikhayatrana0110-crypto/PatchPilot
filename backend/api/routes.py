@@ -275,7 +275,7 @@ def start_debugging(request: DebugRequest) -> DebugResponse:
     if not repo_root.is_dir():
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
-            f"Repository {request.repository_id!r} has not been uplaoded,"
+            f"Repository {request.repository_id!r} has not been uploaded. "
             "Send it to /repositories/upload first.",
         )
 
