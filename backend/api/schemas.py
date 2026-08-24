@@ -38,7 +38,21 @@ class UploadResponse(BaseModel):
     chunks_indexed: int = Field(..., description = "Chunks written to the vector store.")
     message: str = Field(..., description= "Human-readable summary of what happened")
 
+class RepositorySummary(BaseModel):
+    """one uploaded reposiotry, as listed GET /repositories."""
 
+    repository_id: str = Field(
+        ...,
+        description="Pass this to /debug.",
+        examples=["my_repo"],
+    )
+    chunks_indexed: int = Field(
+        ...,
+        description="Chunks in the vector store. zero means it needs re-uploading"
+    )
+    
+
+    
 # STARTING DEBUGGING SESSION
 
 class DebugRequest(BaseModel):
@@ -96,9 +110,9 @@ class ApprovalRequest(BaseModel):
     action: Literal["approve", "reject", "revise"] = Field(
         ...,
         description=(
-            "approve = apply the patch"
-            "reject = discard the patch"
-            "revise = send 'feedback' back to the model AND GENERATE NEW PATCH"
+            "approve = apply the patch. "
+            "reject = discard it and end the session. "
+            "revise = send `feedback` back to the model and generate a new patch."
         ),
     )
 

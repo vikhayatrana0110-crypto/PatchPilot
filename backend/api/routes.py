@@ -21,8 +21,8 @@ from backend.tools.linter import (
     SAFE_REPOSITORY_ID,
     UnsafePathError,
     resolve_repository_root,
+    REPOSITORY_STORAGE_ROOT,
 )
-
 
 from backend.api.schemas import (
     ApprovalRequest,
@@ -31,6 +31,7 @@ from backend.api.schemas import (
     ReviewPayload,
     SessionStatus,
     UploadResponse,
+    RepositorySummary,
 )
 from backend.graph.workflow import get_graph
 
@@ -344,3 +345,66 @@ def resume_session(session_id: str, request: ApprovalRequest) -> DebugResponse:
         )
 
     return _to_response(session_id, result)
+
+
+@router.get(
+    "/sessions/{session_id}",
+    response_model=DebugResponse,
+    summary="Look up the current state of a session",
+)
+def get_session(session_id: str) -> DebugResponse:
+    """Report where a session stands without advancing it.
+
+    Reads the review from snapshot.interrupts rather than snapshot.values on
+    purpose. The state dict names the fields `generated_patch` and `debug_plan`,
+    while ReviewPayload calls them `patch` and `plan` -- so building it from
+    .values would not error, it would silently return a review with no patch and
+    no plan in it. The interrupt payload is the exact dict human_approval sent.
+    """
+    snapshot = get_graph().get_state(_session_config(session_id))
+
+    if snapshot.created_at is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"No session with id {session_id!r}."
+        )
+
+    if snapshot.next and snapshot.interrupts:
+        return DebugResponse(
+            session_id=session_id,
+            status=SessionStatus.AWAITING_APPROVAL,
+            review=ReviewPayload(**snapshot.interrupts[0].value),
+        )
+
+    return DebugResponse(
+        session_id=session_id,
+        status=SessionStatus.COMPLETED,
+        final_report=snapshot.values.get("final_report")
+        or "Session finished without a report.",
+    )
+
+
+@router.get(
+    "/repositories",
+    response_model=list[RepositorySummary],
+    summary="List uploaded repositories",
+)
+
+def list_repositories() -> list[RepositorySummary]:
+    """
+    Every repository on disk, with how much of it is indexed.
+
+    Directory and index can disagree -- a repository extracted before an
+    indexing failure has files but no chunks -- so the count is reported rather
+    than assumed, and a zero tells the caller to re-upload.
+    """
+    collection = get_vector_store().vectorstore._collection
+
+    summaries: list[RepositorySummary] = []
+    for path in sorted(REPOSITORY_STORAGE_ROOT.iterdir()):
+        if not path.is_dir() or not SAFE_REPOSITORY_ID.match(path.name):
+            continue
+        ids = collection.get(where={"repository_id": path.name}, include=[])["ids"]
+        summaries.append(
+            RepositorySummary(repository_id=path.name, chunks_indexed=len(ids))
+        )
+    return summaries
