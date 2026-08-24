@@ -1,5 +1,5 @@
 """HTTP routes for the debugging platform."""
-
+import uuid
 import logging
 import os
 import shutil
@@ -10,7 +10,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
-from backend.api.schemas import UploadResponse
+
+from langgraph.types import Command
+
+
 from backend.rag.code_splitter import CodeSplitter
 from backend.rag.repository_loader import RepositoryLoader
 from backend.rag.vector_store import get_vector_store
@@ -19,6 +22,19 @@ from backend.tools.linter import (
     UnsafePathError,
     resolve_repository_root,
 )
+
+
+from backend.api.schemas import (
+    ApprovalRequest,
+    DebugRequest,   
+    DebugResponse,
+    ReviewPayload,
+    SessionStatus,
+    UploadResponse,
+)
+from backend.graph.workflow import get_graph
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +143,7 @@ def _flatten_single_root(path: Path) -> None:
     inner.rmdir()
 
 
+
 @router.post(
     "/repositories/upload",
     response_model=UploadResponse,
@@ -194,3 +211,136 @@ async def upload_repository(
         chunks_indexed=len(chunks),
         message=f"Indexed {len(documents)} files into {len(chunks)} chunks.",
     )
+
+
+
+
+def _session_config(session_id:str) -> dict:
+    """
+    the graph addresses a session by thread_id;
+    The API calls it session_id
+    """
+
+    return {"configurable":{"thread_id":session_id}}
+
+
+def _to_response(session_id: str, result: dict) -> DebugResponse:
+    """
+    Translate a graph result into the API's single response shape.
+    A run ends in exactly one of two places: paused at the approval interrupt,
+    or finished. Both /debug and /approve funnel through here, so a client only
+    ever branches on `status` -- never on which endpoint it called.
+    """
+
+    interrupts = result.get("__interrupt__")
+    if interrupts:
+        # human_approval passes a dict to interrupt(). Its extra "action"
+        # marker key is ignored -- Pydantic drops unknown fields by default.
+        return DebugResponse(
+            session_id=session_id,
+            status=SessionStatus.AWAITING_APPROVAL,
+            review=ReviewPayload(**interrupts[0].value),
+        )
+
+    return DebugResponse(
+        session_id=session_id,
+        status=SessionStatus.COMPLETED,
+        final_report=result.get("final_report") or "Session finished without a report.",
+    )
+
+
+@router.post(
+    "/debug",
+    response_model=DebugResponse,
+    summary="Start a debugging session",
+)
+
+def start_debugging(request: DebugRequest) -> DebugResponse:
+    """
+    Run the agent until it has a patch to review, or finishes without one.
+    Deliberately a plain `def`, not `async def`. graph.invoke() blocks for tens
+    of seconds -- Groq calls, a linter, a pytest run -- and on the event loop
+    that would stall every other request, /health included. FastAPI runs a
+    non-async endpoint in a threadpool instead.
+    """
+    try:
+        repo_root = resolve_repository_root(request.repository_id)
+    except UnsafePathError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,str(e))
+
+    # Checked up front: without it the graph runs a full retrieval and two LLM
+    # calls against an empty repository before failing to find anything.
+
+    if not repo_root.is_dir():
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Repository {request.repository_id!r} has not been uplaoded,"
+            "Send it to /repositories/upload first.",
+        )
+
+    session_id = uuid.uuid4().hex
+    logger.info("Starting session %s for repository %r",session_id,request.repository_id)
+
+    try:
+        result = get_graph().invoke(
+            {
+                "repository_id": request.repository_id,
+                "issue_description": request.issue_description,
+            },
+            config=_session_config(session_id),
+        )
+    except Exception as e:
+        logger.error("Session %s failed: %s", session_id, e, exc_info=True)
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"the debugging run failed: {e}",
+        )
+
+    return _to_response(session_id, result)
+
+
+
+@router.post(
+    "/sessions/{session_id}/approve",
+    response_model=DebugResponse,
+    summary="Approve, reject, or request changes to a proposed patch",
+)
+def resume_session(session_id: str, request: ApprovalRequest) -> DebugResponse:
+    """Resume a session paused at the approval interrupt.
+
+    Returns a COMPLETED response for approve and reject. For "revise" it
+    returns another AWAITING_APPROVAL payload instead -- the model produces a
+    new patch and the session pauses again -- which is exactly why both
+    endpoints share one response model.
+    """
+    config = _session_config(session_id)
+    snapshot = get_graph().get_state(config)
+
+    # created_at is None only when nothing was ever checkpointed under this id.
+    # A finished session HAS a created_at but an empty `next`, so the two cases
+    # need separate checks and deserve different status codes.
+    if snapshot.created_at is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"No session with id {session_id!r}."
+        )
+
+    if not snapshot.next:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This session has already finished and cannot be resumed.",
+        )
+
+    logger.info("Resuming session %s with action=%s", session_id, request.action)
+
+    try:
+        result = get_graph().invoke(
+            Command(resume={"action": request.action, "feedback": request.feedback}),
+            config=config,
+        )
+    except Exception as e:
+        logger.error("Session %s failed on resume: %s", session_id, e, exc_info=True)
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, f"Resuming the session failed: {e}"
+        )
+
+    return _to_response(session_id, result)

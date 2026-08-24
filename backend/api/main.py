@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 app = FastAPI(
     title = "Codebase Debugging Platform",
-    description="Upload a repository,describe the bug, and review the patch the agent proposes.",
+    description="Upload a repository, describe the bug, and review the patch the agent proposes.",
     version="0.1.0",
 )
 
