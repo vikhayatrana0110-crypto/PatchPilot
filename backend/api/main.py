@@ -15,7 +15,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
 app = FastAPI(
-    title = "Codebase Debugging Platform",
+    title = "PatchPilot",
     description="Upload a repository, describe the bug, and review the patch the agent proposes.",
     version="0.1.0",
 )

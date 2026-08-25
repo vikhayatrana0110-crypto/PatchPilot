@@ -1,4 +1,4 @@
-# Codebase debugging platform
+# PatchPilot
 
 Point it at a repo, describe a bug, and it writes a patch. Then it tests the patch before you ever see it, so you're approving something that already works instead of guessing.
 

@@ -1,5 +1,5 @@
 """
-Streamlit UI for the codebase debugging platform.
+Streamlit UI for PatchPilot.
 
 Runs as its own server process and talks to the FastAPI backend over HTTP,
 server-to-server -- the browser never contacts the API directly, so no CORS
@@ -441,10 +441,10 @@ def render_completed() -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    st.set_page_config(page_title="Codebase Debugging Platform", page_icon="🔧", layout="wide")
+    st.set_page_config(page_title="PatchPilot", page_icon="🔧", layout="wide")
     init_state()
 
-    st.title("🔧 Codebase Debugging Platform")
+    st.title("🔧 PatchPilot")
     st.caption("Upload a repository, describe a bug, and review the patch the agent proposes.")
 
     if not render_sidebar():
