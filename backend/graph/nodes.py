@@ -426,7 +426,7 @@ def validate_patch(state: DebuggingState) -> dict:
     # A same-directory backup on disk, not just an in-memory variable — if this
     # process gets killed outright (OOM, container eviction, tool timeout) between
     # the write below and the revert, the repo isn't left silently mutated.
-    backup_path = full_path.with_name(full_path.name + ".claude_bak")
+    backup_path = full_path.with_name(full_path.name + ".patchpilot_bak")
 
     # Baseline, captured BEFORE the patch is written. Without it "tests are red"
     # is ambiguous: it could mean the patch failed, or that this repo already had
